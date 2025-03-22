@@ -9,21 +9,19 @@ from datetime import datetime, time
 class WebDataScraperPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        # 添加群号配置（需在管理面板配置）
         self.group_id = "626778303"  # 改为实际群号
-        # 启动定时任务
         self.task = asyncio.create_task(self.scheduled_task())
 
     async def scheduled_task(self):
         """每天8点定时发送"""
         while True:
             now = datetime.now().time()
-            if time(14, 58) <= now < time(14, 59):  # 每天8点触发
+            if time(8, 0) <= now < time(8, 1):  # 调整为早上8点触发
                 await self.send_to_group()
-            await asyncio.sleep(60)  # 每分钟检查一次
+            await asyncio.sleep(60)
 
     async def send_to_group(self):
-        """向指定群组发送数据"""
+        """向指定群组发送完整报告"""
         try:
             url = "http://sign.domye.top/"
             response = requests.get(url)
@@ -33,11 +31,17 @@ class WebDataScraperPlugin(Star):
             soup = BeautifulSoup(response.content, 'html.parser')
             user_cards = soup.find_all('div', class_='user-card')
             
+            total = len(user_cards)
+            success = 0
             failed_users = []
+            
             for card in user_cards:
                 username = card.find('h3').text.split(' ')[0]
-                success_status = "✅" in card.find('h3').text
-                if not success_status:  # 仅处理失败用户
+                is_success = "✅" in card.find('h3').text
+                
+                if is_success:
+                    success += 1
+                else:
                     duration = card.find('p').text.split(': ')[1]
                     message = card.find('details').find('pre').get_text('\n').strip()
                     failed_users.append({
@@ -46,66 +50,60 @@ class WebDataScraperPlugin(Star):
                         "message": message
                     })
 
+            # 构建消息内容
+            summary = (
+                "📊 签到统计报告\n"
+                f"👥 总人数: {total}\n"
+                f"✅ 成功: {success}\n"
+                f"❌ 失败: {total - success}\n"
+            )
+            
             if failed_users:
-                result = "⚠️今日签到失败用户：\n"
+                details = "\n⚠️ 失败详情：\n"
                 for user in failed_users:
-                    result += (
-                        f"\n用户名：{user['username']}\n"
-                        f"耗时：{user['duration']}\n"
-                        f"错误信息：\n{user['message']}\n"
+                    details += (
+                        f"\n▫️ 用户：{user['username']}\n"
+                        f"⏱ 耗时：{user['duration']}\n"
+                        f"📝 错误：\n{user['message']}\n"
                     )
-                # 发送到指定群组
-                await self.context.send_message(
-                    unified_msg_origin=f"group_{self.group_id}",
-                    chain=[{"type": "plain", "text": result}]
-                )
-                
+                full_msg = summary + details
+            else:
+                full_msg = summary + "\n🎉 全员签到成功！"
+
+            await self.context.send_message(
+                unified_msg_origin=f"group_{self.group_id}",
+                chain=[{"type": "plain", "text": full_msg}]
+            )
+            
+        except requests.RequestException as e:
+            print(f"网络请求异常：{str(e)}")
         except Exception as e:
             print(f"定时任务异常：{str(e)}")
 
     @filter.command("ahut_sign")
     async def ahut_sign(self, event: AstrMessageEvent):
-        """手动触发时只返回失败用户"""
+        """手动查询签到情况"""
         try:
             url = "http://sign.domye.top/"
             response = requests.get(url)
             response.encoding = 'utf-8'
-            response.raise_for_status()
-
             soup = BeautifulSoup(response.content, 'html.parser')
+            
             user_cards = soup.find_all('div', class_='user-card')
+            total = len(user_cards)
+            success = sum(1 for card in user_cards if "✅" in card.find('h3').text)
             
-            failed_users = []
-            for card in user_cards:
-                username = card.find('h3').text.split(' ')[0]
-                success_status = "✅" in card.find('h3').text
-                if not success_status:
-                    duration = card.find('p').text.split(': ')[1]
-                    message = card.find('details').find('pre').get_text('\n').strip()
-                    failed_users.append({
-                        "username": username,
-                        "duration": duration,
-                        "message": message
-                    })
-
-            if failed_users:
-                result = "⚠️失败用户列表：\n"
-                for user in failed_users:
-                    result += (
-                        f"\n用户名：{user['username']}\n"
-                        f"耗时：{user['duration']}\n"
-                        f"错误信息：\n{user['message']}\n"
-                    )
-            else:
-                result = "🎉今日没有签到失败用户"
-                
-            yield event.plain_result(result)
+            report = (
+                "📋 签到统计报告\n"
+                f"👥 总人数: {total}\n"
+                f"✅ 成功: {success}\n"
+                f"❌ 失败: {total - success}"
+            )
             
-        except requests.RequestException as e:
-            yield event.plain_result(f"请求失败：{str(e)}")
+            yield event.plain_result(report)
+            
         except Exception as e:
-            yield event.plain_result(f"处理异常：{str(e)}")
+            yield event.plain_result(f"❌ 查询失败：{str(e)}")
 
     async def terminate(self):
-        """插件卸载时取消定时任务"""
         self.task.cancel()
