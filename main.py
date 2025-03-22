@@ -1,111 +1,164 @@
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
+from astrbot.api import logger
 import requests
 from bs4 import BeautifulSoup
 import asyncio
-from datetime import datetime, time
+import json
+import os
+from datetime import datetime, time, timedelta
+import heapq
 
-@register("web_data_scraper", "Your Name", "抓取网页数据的插件", "1.0.0")
-class WebDataScraperPlugin(Star):
+class GroupConfigManager:
+    def __init__(self, config_path="ahut_config.json"):
+        self.config_path = config_path
+        self.group_settings = {}
+        self.load_config()
+
+    def load_config(self):
+        if os.path.exists(self.config_path):
+            with open(self.config_path, 'r', encoding='utf-8') as f:
+                self.group_settings = json.load(f)
+
+    def save_config(self):
+        with open(self.config_path, 'w', encoding='utf-8') as f:
+            json.dump(self.group_settings, f, ensure_ascii=False, indent=2)
+
+    def get_group_config(self, group_id):
+        return self.group_settings.get(group_id, {
+            'enabled': False,
+            'schedule_time': '08:00',
+            'last_sent': None
+        })
+
+    def update_group_config(self, group_id, **kwargs):
+        config = self.get_group_config(group_id)
+        config.update(kwargs)
+        self.group_settings[group_id] = config
+        self.save_config()
+
+@register("ahut_notifier", "Your Name", "安徽工业大学签到状态监控", "1.1.0")
+class AhutNotifierPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        # 添加群号配置（需在管理面板配置）
-        self.group_id = "626778303"  # 改为实际群号
-        # 启动定时任务
-        self.task = asyncio.create_task(self.scheduled_task())
+        self.config_manager = GroupConfigManager()
+        self.scheduler = None
+        self.task = asyncio.create_task(self.init_scheduler())
 
-    async def scheduled_task(self):
-        """每天8点定时发送"""
+    async def init_scheduler(self):
+        """初始化定时任务调度器"""
+        self.scheduler = asyncio.create_task(self.schedule_loop())
+    
+    async def fetch_failed_users(self):
+        """获取签到失败用户数据"""
+        try:
+            url = "http://sign.domye.top/"
+            response = requests.get(url, timeout=10)
+            response.encoding = 'utf-8'
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            users = []
+            
+            for card in soup.find_all('div', class_='user-card'):
+                title = card.find('h3').text
+                if '❌' in title:
+                    username = title.split(' ')[0]
+                    duration = card.find('p').text.split(': ')[1]
+                    error = card.find('pre').text.strip()
+                    users.append(f"· {username} | 耗时：{duration}\n   错误：{error}")
+            
+            return users
+        except Exception as e:
+            logger.error(f"数据获取失败: {str(e)}")
+            return None
+
+    async def send_group_message(self, group_id, message):
+        """发送消息到指定群组"""
+        await self.context.send_message(
+            unified_msg_origin=f"group_{group_id}",
+            chain=[{"type": "plain", "text": message}]
+        )
+
+    async def schedule_loop(self):
+        """定时任务主循环"""
         while True:
-            now = datetime.now().time()
-            if time(14, 58) <= now < time(14, 59):  # 每天8点触发
-                await self.send_to_group()
-            await asyncio.sleep(60)  # 每分钟检查一次
-
-    async def send_to_group(self):
-        """向指定群组发送数据"""
-        try:
-            url = "http://sign.domye.top/"
-            response = requests.get(url)
-            response.encoding = 'utf-8'
-            response.raise_for_status()
-
-            soup = BeautifulSoup(response.content, 'html.parser')
-            user_cards = soup.find_all('div', class_='user-card')
-            
-            failed_users = []
-            for card in user_cards:
-                username = card.find('h3').text.split(' ')[0]
-                success_status = "✅" in card.find('h3').text
-                if not success_status:  # 仅处理失败用户
-                    duration = card.find('p').text.split(': ')[1]
-                    message = card.find('details').find('pre').get_text('\n').strip()
-                    failed_users.append({
-                        "username": username,
-                        "duration": duration,
-                        "message": message
-                    })
-
-            if failed_users:
-                result = "⚠️今日签到失败用户：\n"
-                for user in failed_users:
-                    result += (
-                        f"\n用户名：{user['username']}\n"
-                        f"耗时：{user['duration']}\n"
-                        f"错误信息：\n{user['message']}\n"
-                    )
-                # 发送到指定群组
-                await self.context.send_message(
-                    unified_msg_origin=f"group_{self.group_id}",
-                    chain=[{"type": "plain", "text": result}]
-                )
+            now = datetime.now()
+            for group_id in list(self.config_manager.group_settings.keys()):
+                config = self.config_manager.get_group_config(group_id)
                 
-        except Exception as e:
-            print(f"定时任务异常：{str(e)}")
-
-    @filter.command("ahut_sign")
-    async def ahut_sign(self, event: AstrMessageEvent):
-        """手动触发时只返回失败用户"""
-        try:
-            url = "http://sign.domye.top/"
-            response = requests.get(url)
-            response.encoding = 'utf-8'
-            response.raise_for_status()
-
-            soup = BeautifulSoup(response.content, 'html.parser')
-            user_cards = soup.find_all('div', class_='user-card')
-            
-            failed_users = []
-            for card in user_cards:
-                username = card.find('h3').text.split(' ')[0]
-                success_status = "✅" in card.find('h3').text
-                if not success_status:
-                    duration = card.find('p').text.split(': ')[1]
-                    message = card.find('details').find('pre').get_text('\n').strip()
-                    failed_users.append({
-                        "username": username,
-                        "duration": duration,
-                        "message": message
-                    })
-
-            if failed_users:
-                result = "⚠️失败用户列表：\n"
-                for user in failed_users:
-                    result += (
-                        f"\n用户名：{user['username']}\n"
-                        f"耗时：{user['duration']}\n"
-                        f"错误信息：\n{user['message']}\n"
-                    )
-            else:
-                result = "🎉今日没有签到失败用户"
+                if not config['enabled']:
+                    continue
                 
-            yield event.plain_result(result)
-            
-        except requests.RequestException as e:
-            yield event.plain_result(f"请求失败：{str(e)}")
-        except Exception as e:
-            yield event.plain_result(f"处理异常：{str(e)}")
+                # 解析预定时间
+                try:
+                    schedule_time = datetime.strptime(config['schedule_time'], "%H:%M").time()
+                except ValueError:
+                    continue
+                
+                # 计算下一次触发时间
+                target_time = datetime.combine(now.date(), schedule_time)
+                if target_time <= now:
+                    target_time += timedelta(days=1)
+                
+                # 到达预定时间时执行
+                if now >= target_time - timedelta(seconds=60) and now <= target_time:
+                    users = await self.fetch_failed_users()
+                    if users:
+                        msg = "⚠️今日签到失败用户：\n" + "\n".join(users)
+                        await self.send_group_message(group_id, msg)
+                        self.config_manager.update_group_config(
+                            group_id, last_sent=now.isoformat()
+                        )
+
+            await asyncio.sleep(30)  # 每30秒检查一次
+
+    @filter.command("set_ahut_time")
+    async def set_schedule_time(self, event: AstrMessageEvent, time_str: str):
+        """设置每日通知时间（群管理员）"""
+        group_id = event.get_group_id()
+        
+        try:
+            # 验证时间格式
+            datetime.strptime(time_str, "%H:%M")
+            self.config_manager.update_group_config(
+                group_id, 
+                schedule_time=time_str,
+                enabled=True
+            )
+            yield event.plain_result(f"✅ 已设置每日通知时间为 {time_str}")
+        except ValueError:
+            yield event.plain_result("❌ 时间格式错误，请使用 HH:MM 格式")
+
+    @filter.command("enable_ahut")
+    async def enable_notifications(self, event: AstrMessageEvent):
+        """启用每日通知（群管理员）"""
+        group_id = event.get_group_id()
+        self.config_manager.update_group_config(group_id, enabled=True)
+        yield event.plain_result("✅ 已启用每日签到状态通知")
+
+    @filter.command("disable_ahut")
+    async def disable_notifications(self, event: AstrMessageEvent):
+        """禁用每日通知（群管理员）"""
+        group_id = event.get_group_id()
+        self.config_manager.update_group_config(group_id, enabled=False)
+        yield event.plain_result("✅ 已禁用每日签到状态通知")
+
+    @filter.command("ahut_status")
+    async def check_status(self, event: AstrMessageEvent):
+        """查看当前配置"""
+        group_id = event.get_group_id()
+        config = self.config_manager.get_group_config(group_id)
+        status = "已启用" if config['enabled'] else "已禁用"
+        msg = (
+            f"当前状态：{status}\n"
+            f"每日通知时间：{config['schedule_time']}\n"
+            f"最后发送时间：{config['last_sent'] or '从未发送'}"
+        )
+        yield event.plain_result(msg)
 
     async def terminate(self):
-        """插件卸载时取消定时任务"""
-        self.task.cancel()
+        """插件卸载时清理任务"""
+        if self.scheduler:
+            self.scheduler.cancel()
+        logger.info("安徽工大签到插件已卸载")
