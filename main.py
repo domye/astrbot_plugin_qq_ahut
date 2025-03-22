@@ -21,7 +21,7 @@ class DormCheckinPlugin(Star):
         """精准定时任务调度"""
         while True:
             now = datetime.now()
-            target_time = datetime.combine(now.date(), time(9, 30))
+            target_time = datetime.combine(now.date(), time(14, 30))
             if now >= target_time:
                 target_time += timedelta(days=1)
             
