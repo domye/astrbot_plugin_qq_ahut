@@ -144,7 +144,38 @@ class WebDataScraperPlugin(Star):
     async def ahut_sign(self, event: AstrMessageEvent):
         """立即获取签到状态"""
         try:
-            # [原有获取签到状态的代码...]
+            url = "http://sign.domye.top/"
+            response = requests.get(url)
+            response.encoding = 'utf-8'
+            response.raise_for_status()
+
+            soup = BeautifulSoup(response.content, 'html.parser')
+            user_cards = soup.find_all('div', class_='user-card')
+            
+            failed_users = []
+            for card in user_cards:
+                username = card.find('h3').text.split(' ')[0]
+                success_status = "✅" in card.find('h3').text
+                if not success_status:
+                    duration = card.find('p').text.split(': ')[1]
+                    message = card.find('details').find('pre').get_text('\n').strip()
+                    failed_users.append({
+                        "username": username,
+                        "duration": duration,
+                        "message": message
+                    })
+
+            if failed_users:
+                result = "⚠️失败用户列表：\n"
+                for user in failed_users:
+                    result += (
+                        f"\n用户名：{user['username']}\n"
+                        f"耗时：{user['duration']}\n"
+                        f"错误信息：\n{user['message']}\n"
+                    )
+            else:
+                result = "🎉今日没有签到失败用户"
+                
             yield event.plain_result(result)
         except Exception as e:
             yield event.plain_result(f"请求失败: {str(e)}")
