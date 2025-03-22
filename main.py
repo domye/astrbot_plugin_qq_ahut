@@ -40,7 +40,7 @@ class SignMonitorPlugin(Star):
         except Exception as e:
             raise RuntimeError(f"数据解析失败: {str(e)}")
 
-    @filter.command("sign")
+    @filter.command("ahut_sign")
     async def query_sign_status(self, event: AstrMessageEvent):
         """触发签到状态查询"""
         try:
@@ -49,11 +49,11 @@ class SignMonitorPlugin(Star):
             
             # 构建消息模板
             report = (
-                "🔔 宿舍签到实时监控\n"
-                f"🕒 报告时间: {data['time']}\n"
+                "🔔 晚寝签到报告\n"
                 f"👥 总人数: {data['total']}\n"
                 f"✅ 成功: {data['success']}\n"
                 f"❌ 失败: {failure_count}"
+                f"\n\n🕒 报告生成时间: {data['time']}"
             )
 
             # 添加失败详情
