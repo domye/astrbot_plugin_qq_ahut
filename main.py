@@ -3,75 +3,97 @@ from astrbot.api.star import Context, Star, register
 import requests
 from bs4 import BeautifulSoup
 import astrbot.api.message_components as Comp
+import asyncio
 
-@register("web_scraper", "YourName", "网页数据抓取插件", "1.0.0", "https://github.com/yourrepo")
-class WebScraper(Star):
+@register("checkin_monitor", "EDU_TEAM", "宿舍签到监控系统", "1.0.0")
+class CheckinMonitor(Star):
     def __init__(self, context: Context):
         super().__init__(context)
+        self.failed_students = []
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Cache-Control": "no-cache"
         }
+        asyncio.create_task(self.schedule_check())  # 初始化定时任务
 
-    @filter.command("scrape")
-    async def scrape_website(self, event: AstrMessageEvent, url: str):
-        """
-        抓取指定网页的用户卡片数据
-        参数：url - 目标网页地址
-        示例：/scrape https://example.com
-        """
+    async def schedule_check(self):
+        """定时监控任务"""
+        while True:
+            await asyncio.sleep(3600)  # 每小时执行一次
+            if self.failed_students:
+                await self.send_failure_report()
+
+    async def fetch_checkin_data(self, url: str):
+        """获取签到数据"""
         try:
-            # 发送HTTP请求
             response = requests.get(url, headers=self.headers, timeout=10)
             response.raise_for_status()
-            
-            # 解析网页内容
-            soup = BeautifulSoup(response.text, 'html.parser')
-            user_cards = soup.find_all('div', class_='user-card')
-            
-            if not user_cards:
-                yield event.plain_result("⚠️ 未找到用户卡片数据")
-                return
-
-            # 构建消息链
-            result = event.make_result()
-            result.message("抓取结果：").bold("共找到 {} 条数据\n".format(len(user_cards)))
-            
-            for index, card in enumerate(user_cards[:5]):  # 限制显示前5条
-                title = card.find('h3').text.strip()
-                content = card.find('p').text.strip()
-                
-                result.message(f"{index+1}. {title}\n")
-                result.message(f"   {content}\n")
-                result.hr()
-            
-            result.message("\n完整数据已保存到文件").italic()
-            yield result
-
-        except requests.exceptions.RequestException as e:
-            error_chain = [
-                Comp.Text("请求失败: ").color("#dc3545"),
-                Comp.Text(str(e)).bold(),
-                Comp.Image.fromURL("https://example.com/error.png")
-            ]
-            yield event.chain_result(error_chain)
+            return BeautifulSoup(response.text, 'html.parser')
         except Exception as e:
-            yield event.plain_result(f"解析错误: {str(e)}")
+            self.logger.error(f"数据获取失败: {str(e)}")
+            return None
 
-    @filter.command("scrape_advanced")
-    async def advanced_scrape(self, event: AstrMessageEvent):
-        """
-        交互式网页抓取命令
-        示例：/scrape_advanced
-        """
-        yield event.plain_result("请输入要抓取的网页地址：")
+    def parse_failures(self, soup):
+        """解析失败数据"""
+        failures = []
+        for card in soup.find_all('div', class_='user-card error'):
+            student_id = card.get('data-id')  # 假设学号存储在data-id属性
+            username = card.find('h3').text.split()[0]
+            duration = card.find('p', string=lambda t: "耗时" in t).text
+            failures.append({
+                "id": student_id,
+                "name": username,
+                "duration": duration
+            })
+        return failures
+
+    async def send_failure_report(self):
+        """发送失败报告"""
+        report = ["❌ 签到失败名单"]
+        for idx, student in enumerate(self.failed_students, 1):
+            report.append(
+                f"{idx}. {student['id']} {student['name']}"
+                f"\n⏱ 耗时: {student['duration']}"
+            )
         
-        @filter.session_waiter(timeout=60)
-        async def wait_for_url(controller, event: AstrMessageEvent):
-            url = event.message_str
-            if url.startswith(("http://", "https://")):
-                await self.scrape_website(event, url)
-                controller.stop()
-            else:
-                yield event.plain_result("⚠️ 无效的URL格式，请重新输入")
+        await self.context.send_message(
+            target="ADMIN_CHANNEL",  # 预设管理频道
+            message=Comp.Text("\n\n".join(report)).card_style("#ffe6e6")
+        )
 
-        await wait_for_url(event)
+    @filter.command("check_failures")
+    async def check_failures(self, event: AstrMessageEvent, url: str):
+        """即时检查失败名单
+        示例：/check_failures https://example.com/checkin
+        """
+        soup = await self.fetch_checkin_data(url)
+        if not soup:
+            yield event.plain_result("数据获取失败，请检查URL")
+            return
+
+        self.failed_students = self.parse_failures(soup)
+        if not self.failed_students:
+            yield event.plain_result("🎉 当前无签到失败记录")
+            return
+
+        # 构建富文本消息
+        result = event.make_result()
+        result.message("📋 最新失败名单").bold().divider()
+        
+        for student in self.failed_students:
+            result.message(
+                f"学号: {student['id']}\n"
+                f"姓名: {student['name']}\n"
+                f"耗时: {student['duration']}"
+            ).divider()
+        
+        yield result
+
+    @filter.command("set_schedule")
+    async def set_schedule(self, event: AstrMessageEvent, interval: int):
+        """设置定时监控间隔（小时）
+        示例：/set_schedule 2
+        """
+        global CHECK_INTERVAL
+        CHECK_INTERVAL = interval * 3600
+        yield event.plain_result(f"✅ 监控间隔已设置为每{interval}小时")
