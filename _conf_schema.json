@@ -2,13 +2,13 @@
 {
     "qq_group": {
         "type": "string",
-        "description": "接收通知的QQ群号",
+        "description": "鎺ユ敹閫氱煡鐨凲Q缇ゅ彿",
         "hint": "626778303",
         "obvious_hint": true
     },
     "web_url": {
         "type": "string",
-        "description": "签到状态页面URL",
+        "description": "绛惧埌鐘舵�侀〉闈RL",
         "hint": "http://sign.domye.top/"
     }
 }
