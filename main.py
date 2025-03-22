@@ -4,23 +4,26 @@ import requests
 from bs4 import BeautifulSoup
 import asyncio
 from datetime import datetime, time
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 @register("web_data_scraper", "Your Name", "抓取网页数据的插件", "1.0.0")
 class WebDataScraperPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        # 添加群号配置（需在管理面板配置）
         self.group_id = "626778303"  # 改为实际群号
-        # 启动定时任务
-        self.task = asyncio.create_task(self.scheduled_task())
-
-    async def scheduled_task(self):
-        """每天8点定时发送"""
-        while True:
-            now = datetime.now().time()
-            if time(14, 58) <= now < time(14, 59):  # 每天8点触发
-                await self.send_to_group()
-            await asyncio.sleep(60)  # 每分钟检查一次
+        self.scheduler = AsyncIOScheduler()
+        self._setup_scheduler()
+    
+    def _setup_scheduler(self):
+        """配置定时任务调度器"""
+        # 每天8点触发（cron表达式：0 8 * * *）
+        self.scheduler.add_job(
+            self.send_to_group,
+            'cron',
+            hour=15,
+            minute=50
+        )
+        self.scheduler.start()
 
     async def send_to_group(self):
         """向指定群组发送数据"""
@@ -37,7 +40,7 @@ class WebDataScraperPlugin(Star):
             for card in user_cards:
                 username = card.find('h3').text.split(' ')[0]
                 success_status = "✅" in card.find('h3').text
-                if not success_status:  # 仅处理失败用户
+                if not success_status:
                     duration = card.find('p').text.split(': ')[1]
                     message = card.find('details').find('pre').get_text('\n').strip()
                     failed_users.append({
@@ -54,7 +57,6 @@ class WebDataScraperPlugin(Star):
                         f"耗时：{user['duration']}\n"
                         f"错误信息：\n{user['message']}\n"
                     )
-                # 发送到指定群组
                 await self.context.send_message(
                     unified_msg_origin=f"group_{self.group_id}",
                     chain=[{"type": "plain", "text": result}]
@@ -88,16 +90,13 @@ class WebDataScraperPlugin(Star):
                         "message": message
                     })
 
-            if failed_users:
-                result = "⚠️失败用户列表：\n"
-                for user in failed_users:
-                    result += (
-                        f"\n用户名：{user['username']}\n"
-                        f"耗时：{user['duration']}\n"
-                        f"错误信息：\n{user['message']}\n"
-                    )
-            else:
-                result = "🎉今日没有签到失败用户"
+            result = "⚠️失败用户列表：\n" if failed_users else "🎉今日没有签到失败用户"
+            for user in failed_users:
+                result += (
+                    f"\n用户名：{user['username']}\n"
+                    f"耗时：{user['duration']}\n"
+                    f"错误信息：\n{user['message']}\n"
+                )
                 
             yield event.plain_result(result)
             
@@ -107,5 +106,6 @@ class WebDataScraperPlugin(Star):
             yield event.plain_result(f"处理异常：{str(e)}")
 
     async def terminate(self):
-        """插件卸载时取消定时任务"""
-        self.task.cancel()
+        """插件卸载时关闭调度器"""
+        if self.scheduler.running:
+            self.scheduler.shutdown()
