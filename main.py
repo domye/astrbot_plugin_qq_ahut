@@ -1,136 +1,60 @@
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
-from astrbot.api.message_components import Plain, AtAll
-import aiohttp
-import asyncio
+import requests
 from bs4 import BeautifulSoup
-from datetime import datetime, time, timedelta
-import logging
 
-logger = logging.getLogger(__name__)
-
-@register("dorm_checkin", "宿舍签到监控", "自动抓取宿舍签到状态并推送群消息", "1.1.0")
-class DormCheckinPlugin(Star):
+@register("web_data_scraper", "Your Name", "抓取网页数据的插件", "1.0.0")
+class WebDataScraperPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        self.config = self.context.get_config().get("dorm_checkin", {})
-        self.session = aiohttp.ClientSession()
-        asyncio.create_task(self.scheduler())
 
-    async def scheduler(self):
-        """精准定时任务调度"""
-        while True:
-            now = datetime.now()
-            target_time = datetime.combine(now.date(), time(14, 30))
-            if now >= target_time:
-                target_time += timedelta(days=1)
-            
-            delay = (target_time - now).total_seconds()
-            await asyncio.sleep(delay)
-            
-            try:
-                data = await self.fetch_data()
-                await self.send_report(data)
-            except Exception as e:
-                logger.error(f"定时任务执行失败: {str(e)}")
-            await asyncio.sleep(60)  # 防止重复执行
-
-    async def fetch_data(self):
-        """增强型网页抓取"""
+    @filter.command("scrape_web_data")
+    async def scrape_web_data(self, event: AstrMessageEvent):
+        url = "http://sign.domye.top/"
+        
+        # 添加异常处理和编码设置
         try:
-            async with self.session.get(
-                self.config.get("web_url", ""),
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as response:
-                if response.status == 200:
-                    return self.parse_html(await response.text())
-                return None
+            response = requests.get(url)
+            response.encoding = 'utf-8'  # 强制设置编码
+            response.raise_for_status()
+            
+            # 使用内容字节流并指定编码解析
+            soup = BeautifulSoup(response.content, 'html.parser', from_encoding='utf-8')
+
+            # 数据提取部分保持不变
+            summary = soup.find('div', class_='summary')
+            total_users = summary.find('p').text.split(': ')[1]
+            success_count = summary.find_all('p')[1].text.split(': ')[1]
+            failure_count = summary.find_all('p')[2].text.split(': ')[1]
+
+            user_cards = soup.find_all('div', class_='user-card')
+            user_data = []
+            for card in user_cards:
+                username = card.find('h3').text.split(' ')[0]
+                success_status = card.find('h3').text.split(' ')[1] == "✅"
+                duration = card.find('p').text.split(': ')[1]
+                # 改进换行符处理
+                message = card.find('details').find('pre').get_text('\n').strip()
+                user_data.append({
+                    "username": username,
+                    "success": success_status,
+                    "duration": duration,
+                    "message": message
+                })
+
+            result = f"总人数: {total_users}\n成功人数: {success_count}\n失败人数: {failure_count}\n"
+            for user in user_data:
+                result += (
+                    f"\n用户名: {user['username']}\n"
+                    f"成功状态: {user['success']}\n"
+                    f"耗时: {user['duration']}\n"
+                    f"消息:\n{user['message']}\n"
+                )
+
+            # 确保框架正确处理Unicode
+            yield event.plain_result(result)
+            
+        except requests.RequestException as e:
+            yield event.plain_result(f"请求失败: {str(e)}")
         except Exception as e:
-            logger.error(f"网络请求异常: {str(e)}")
-            return None
-
-    def parse_html(self, html):
-        """稳健的HTML解析"""
-        soup = BeautifulSoup(html, "lxml")
-        
-        # 解析汇总数据
-        summary = soup.find("div", class_="summary")
-        total = int(summary.find("p", string=lambda t: "总人数" in t).text.split(":")[1].strip())
-        success = int(summary.find("p", style="color: #28a745;").text.split(":")[1].strip())
-        
-        # 解析失败学号
-        failures = []
-        for card in soup.find_all("div", class_="user-card"):
-            if "error" in card["class"]:
-                username = card.find("h3").text.split()[0].strip()
-                failures.append(username)
-        
-        return {
-            "total": total,
-            "success": success,
-            "failures": failures,
-            "failure_count": len(failures)
-        }
-
-    async def send_report(self, data):
-        """增强消息链构建"""
-        if not data or not self.config.get("qq_group"):
-            return
-        
-        chain = [Plain("📢 宿舍签到报告\n")]
-        
-        if data["failure_count"] == 0:
-            chain.append(Plain(f"✅ 全员签到成功！总人数：{data['total']}"))
-        else:
-            chain.extend([
-                AtAll(),
-                Plain(f"❌ 签到失败！失败人数：{data['failure_count']}\n"),
-                Plain("失败学号列表：\n" + "\n".join(data["failures"]))
-            ])
-        
-        await self.context.send_message(
-            target=f"group::{self.config['qq_group']}",  
-            message_chain=chain
-        )
-
-    @filter.command("set_group")
-    async def set_group(self, event: AstrMessageEvent, group_id: str):
-        """设置监控群号"""
-        if not group_id.isdigit():
-            yield event.plain_result("❌ 群号必须为纯数字")
-            return
-        
-        self.config["qq_group"] = group_id
-        self.context.get_config()["dorm_checkin"] = self.config
-        self.context.get_config().save_config()
-        yield event.plain_result(f"✅ 监控群号已设置为：{group_id}")
-
-    @filter.command("set_url")
-    async def set_url(self, event: AstrMessageEvent, url: str):
-        """设置监控地址"""
-        if not url.startswith(("http://", "https://")):
-            yield event.plain_result("❌ URL必须以http://或https://开头")
-            return
-        
-        self.config["web_url"] = url
-        self.context.get_config()["dorm_checkin"] = self.config
-        self.context.get_config().save_config()
-        yield event.plain_result(f"✅ 监控地址已设置为：{url}")
-
-    async def terminate(self):
-        """清理资源"""
-        await self.session.close()
-    
-
-        # 新增即时检查指令
-    @filter.command("check")
-    async def manual_check(self, event: AstrMessageEvent):
-        """手动触发签到检查"""
-        if not self.config.get("qq_group") or not self.config.get("web_url"):
-            yield event.plain_result("❌ 请先设置群号和监控网址")
-            return
-        
-        # 与定时任务相同的处理逻辑
-        data = await self.fetch_data()
-        await self.send_report(data)
-        yield event.plain_result("已触发即时检查")
+            yield event.plain_result(f"处理异常: {str(e)}")
