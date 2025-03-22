@@ -89,7 +89,7 @@ class DormCheckinPlugin(Star):
             ])
         
         await self.context.send_message(
-            unified_msg_origin=f"group::{self.config['qq_group']}",
+            target=f"group::{self.config['qq_group']}",  
             message_chain=chain
         )
 
