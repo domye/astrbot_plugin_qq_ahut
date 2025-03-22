@@ -18,7 +18,7 @@ class WebDataScraperPlugin(Star):
         """每天8点定时发送"""
         while True:
             now = datetime.now().time()
-            if time(8, 0) <= now < time(14, 51):  # 每天8点触发
+            if time(14, 58) <= now < time(14, 59):  # 每天8点触发
                 await self.send_to_group()
             await asyncio.sleep(60)  # 每分钟检查一次
 
