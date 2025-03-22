@@ -10,7 +10,7 @@ class WebDataScraperPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         # 添加群号配置（需在管理面板配置）
-        self.group_id = "你的群号"  # 改为实际群号
+        self.group_id = "626778303"  # 改为实际群号
         # 启动定时任务
         self.task = asyncio.create_task(self.scheduled_task())
 
@@ -18,7 +18,7 @@ class WebDataScraperPlugin(Star):
         """每天8点定时发送"""
         while True:
             now = datetime.now().time()
-            if time(8, 0) <= now < time(8, 1):  # 每天8点触发
+            if time(8, 0) <= now < time(14, 51):  # 每天8点触发
                 await self.send_to_group()
             await asyncio.sleep(60)  # 每分钟检查一次
 
@@ -63,8 +63,8 @@ class WebDataScraperPlugin(Star):
         except Exception as e:
             print(f"定时任务异常：{str(e)}")
 
-    @filter.command("scrape_web_data")
-    async def scrape_web_data(self, event: AstrMessageEvent):
+    @filter.command("ahut_sign")
+    async def ahut_sign(self, event: AstrMessageEvent):
         """手动触发时只返回失败用户"""
         try:
             url = "http://sign.domye.top/"
