@@ -1,99 +1,134 @@
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
-import requests
-from bs4 import BeautifulSoup
-import astrbot.api.message_components as Comp
+from astrbot.api.message_components import Plain, AtAll
+import aiohttp
 import asyncio
+from bs4 import BeautifulSoup
+from datetime import datetime, time, timedelta
+import logging
 
-@register("checkin_monitor", "EDU_TEAM", "宿舍签到监控系统", "1.0.0")
-class CheckinMonitor(Star):
+logger = logging.getLogger(__name__)
+
+@register("dorm_checkin", "宿舍签到监控", "自动抓取宿舍签到状态并推送群消息", "1.1.0")
+class DormCheckinPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        self.failed_students = []
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Cache-Control": "no-cache"
-        }
-        asyncio.create_task(self.schedule_check())  # 初始化定时任务
+        self.config = self.context.get_config().get("dorm_checkin", {})
+        self.session = aiohttp.ClientSession()
+        asyncio.create_task(self.scheduler())
 
-    async def schedule_check(self):
-        """定时监控任务"""
+    async def scheduler(self):
+        """精准定时任务调度"""
         while True:
-            await asyncio.sleep(3600)  # 每小时执行一次
-            if self.failed_students:
-                await self.send_failure_report()
+            now = datetime.now()
+            target_time = datetime.combine(now.date(), time(9, 30))
+            if now >= target_time:
+                target_time += timedelta(days=1)
+            
+            delay = (target_time - now).total_seconds()
+            await asyncio.sleep(delay)
+            
+            try:
+                data = await self.fetch_data()
+                await self.send_report(data)
+            except Exception as e:
+                logger.error(f"定时任务执行失败: {str(e)}")
+            await asyncio.sleep(60)  # 防止重复执行
+   # 新增即时检查指令
+    @filter.command("check")
+    async def manual_check(self, event: AstrMessageEvent):
+        """手动触发签到检查"""
+        if not self.config.get("qq_group") or not self.config.get("web_url"):
+            yield event.plain_result("❌ 请先设置群号和监控网址")
+            return
+        
+        # 与定时任务相同的处理逻辑
+        data = await self.fetch_data()
+        await self.send_report(data)
+        yield event.plain_result("已触发即时检查")
 
-    async def fetch_checkin_data(self, url: str):
-        """获取签到数据"""
+    async def fetch_data(self):
+        """增强型网页抓取"""
         try:
-            response = requests.get(url, headers=self.headers, timeout=10)
-            response.raise_for_status()
-            return BeautifulSoup(response.text, 'html.parser')
+            async with self.session.get(
+                self.config.get("web_url", ""),
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    return self.parse_html(await response.text())
+                return None
         except Exception as e:
-            self.logger.error(f"数据获取失败: {str(e)}")
+            logger.error(f"网络请求异常: {str(e)}")
             return None
 
-    def parse_failures(self, soup):
-        """解析失败数据"""
+    def parse_html(self, html):
+        """稳健的HTML解析"""
+        soup = BeautifulSoup(html, "lxml")
+        
+        # 解析汇总数据
+        summary = soup.find("div", class_="summary")
+        total = int(summary.find("p", string=lambda t: "总人数" in t).text.split(":")[1].strip())
+        success = int(summary.find("p", style="color: #28a745;").text.split(":")[1].strip())
+        
+        # 解析失败学号
         failures = []
-        for card in soup.find_all('div', class_='user-card error'):
-            student_id = card.get('data-id')  # 假设学号存储在data-id属性
-            username = card.find('h3').text.split()[0]
-            duration = card.find('p', string=lambda t: "耗时" in t).text
-            failures.append({
-                "id": student_id,
-                "name": username,
-                "duration": duration
-            })
-        return failures
+        for card in soup.find_all("div", class_="user-card"):
+            if "error" in card["class"]:
+                username = card.find("h3").text.split()[0].strip()
+                failures.append(username)
+        
+        return {
+            "total": total,
+            "success": success,
+            "failures": failures,
+            "failure_count": len(failures)
+        }
 
-    async def send_failure_report(self):
-        """发送失败报告"""
-        report = ["❌ 签到失败名单"]
-        for idx, student in enumerate(self.failed_students, 1):
-            report.append(
-                f"{idx}. {student['id']} {student['name']}"
-                f"\n⏱ 耗时: {student['duration']}"
-            )
+    async def send_report(self, data):
+        """增强消息链构建"""
+        if not data or not self.config.get("qq_group"):
+            return
+        
+        chain = [Plain("📢 宿舍签到报告\n")]
+        
+        if data["failure_count"] == 0:
+            chain.append(Plain(f"✅ 全员签到成功！总人数：{data['total']}"))
+        else:
+            chain.extend([
+                AtAll(),
+                Plain(f"❌ 签到失败！失败人数：{data['failure_count']}\n"),
+                Plain("失败学号列表：\n" + "\n".join(data["failures"]))
+            ])
         
         await self.context.send_message(
-            target="ADMIN_CHANNEL",  # 预设管理频道
-            message=Comp.Text("\n\n".join(report)).card_style("#ffe6e6")
+            unified_msg_origin=f"group::{self.config['qq_group']}",
+            message_chain=chain
         )
 
-    @filter.command("check_failures")
-    async def check_failures(self, event: AstrMessageEvent, url: str):
-        """即时检查失败名单
-        示例：/check_failures https://example.com/checkin
-        """
-        soup = await self.fetch_checkin_data(url)
-        if not soup:
-            yield event.plain_result("数据获取失败，请检查URL")
+    @filter.command("set_group")
+    async def set_group(self, event: AstrMessageEvent, group_id: str):
+        """设置监控群号"""
+        if not group_id.isdigit():
+            yield event.plain_result("❌ 群号必须为纯数字")
             return
+        
+        self.config["qq_group"] = group_id
+        self.context.get_config()["dorm_checkin"] = self.config
+        self.context.get_config().save_config()
+        yield event.plain_result(f"✅ 监控群号已设置为：{group_id}")
 
-        self.failed_students = self.parse_failures(soup)
-        if not self.failed_students:
-            yield event.plain_result("🎉 当前无签到失败记录")
+    @filter.command("set_url")
+    async def set_url(self, event: AstrMessageEvent, url: str):
+        """设置监控地址"""
+        if not url.startswith(("http://", "https://")):
+            yield event.plain_result("❌ URL必须以http://或https://开头")
             return
-
-        # 构建富文本消息
-        result = event.make_result()
-        result.message("📋 最新失败名单").bold().divider()
         
-        for student in self.failed_students:
-            result.message(
-                f"学号: {student['id']}\n"
-                f"姓名: {student['name']}\n"
-                f"耗时: {student['duration']}"
-            ).divider()
-        
-        yield result
+        self.config["web_url"] = url
+        self.context.get_config()["dorm_checkin"] = self.config
+        self.context.get_config().save_config()
+        yield event.plain_result(f"✅ 监控地址已设置为：{url}")
 
-    @filter.command("set_schedule")
-    async def set_schedule(self, event: AstrMessageEvent, interval: int):
-        """设置定时监控间隔（小时）
-        示例：/set_schedule 2
-        """
-        global CHECK_INTERVAL
-        CHECK_INTERVAL = interval * 3600
-        yield event.plain_result(f"✅ 监控间隔已设置为每{interval}小时")
+    async def terminate(self):
+        """清理资源"""
+        await self.session.close()
