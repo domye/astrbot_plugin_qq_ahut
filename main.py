@@ -53,7 +53,7 @@ class SignMonitorPlugin(Star):
                 f"👥 总人数: {data['total']}\n"
                 f"✅ 成功: {data['success']}\n"
                 f"❌ 失败: {failure_count}"
-                f"\n\n🕒 报告生成时间: {data['time']}"
+                f"\n🕒 报告生成时间: {data['time']}"
             )
 
             # 添加失败详情
