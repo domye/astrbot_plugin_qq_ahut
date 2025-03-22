@@ -10,7 +10,7 @@ class WebDataScraperPlugin(Star):
 
     @filter.command("scrape_web_data")
     async def scrape_web_data(self, event: AstrMessageEvent):
-        url = "http://your_webpage_url"  # 请将这里替换为实际的网页地址
+        url = "http://sign.domye.top/"  # 请将这里替换为实际的网页地址
         response = requests.get(url)
         soup = BeautifulSoup(response.text, 'html.parser')
 
