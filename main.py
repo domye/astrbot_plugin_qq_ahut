@@ -34,18 +34,6 @@ class DormCheckinPlugin(Star):
             except Exception as e:
                 logger.error(f"定时任务执行失败: {str(e)}")
             await asyncio.sleep(60)  # 防止重复执行
-   # 新增即时检查指令
-    @filter.command("check")
-    async def manual_check(self, event: AstrMessageEvent):
-        """手动触发签到检查"""
-        if not self.config.get("qq_group") or not self.config.get("web_url"):
-            yield event.plain_result("❌ 请先设置群号和监控网址")
-            return
-        
-        # 与定时任务相同的处理逻辑
-        data = await self.fetch_data()
-        await self.send_report(data)
-        yield event.plain_result("已触发即时检查")
 
     async def fetch_data(self):
         """增强型网页抓取"""
