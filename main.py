@@ -16,51 +16,67 @@ class WebDataScraperPlugin(Star):
         """每天8点定时发送"""
         while True:
             now = datetime.now().time()
-            if time(8, 0) <= now < time(8, 1):  # 调整为早上8点触发
+            if time(8, 0) <= now < time(8, 1):
                 await self.send_to_group()
             await asyncio.sleep(60)
+
+    async def parse_web_data(self):
+        """解析网页数据并返回结构化信息"""
+        url = "http://sign.domye.top/"
+        response = requests.get(url)
+        response.encoding = 'utf-8'
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # 解析报告时间（根据实际网页结构调整选择器）
+        time_element = soup.find('div', class_='summary').find_all('p')[-1]
+        report_time = time_element.text.split(': ')[1].strip()
+        
+        # 解析用户数据
+        user_cards = soup.find_all('div', class_='user-card')
+        total = len(user_cards)
+        success = 0
+        failed_users = []
+        
+        for card in user_cards:
+            username = card.find('h3').text.split(' ')[0]
+            is_success = "✅" in card.find('h3').text
+            
+            if is_success:
+                success += 1
+            else:
+                duration = card.find('p').text.split(': ')[1]
+                message = card.find('details').find('pre').get_text('\n').strip()
+                failed_users.append({
+                    "username": username,
+                    "duration": duration,
+                    "message": message
+                })
+        
+        return {
+            "report_time": report_time,
+            "total": total,
+            "success": success,
+            "failed_users": failed_users
+        }
 
     async def send_to_group(self):
         """向指定群组发送完整报告"""
         try:
-            url = "http://sign.domye.top/"
-            response = requests.get(url)
-            response.encoding = 'utf-8'
-            response.raise_for_status()
-
-            soup = BeautifulSoup(response.content, 'html.parser')
-            user_cards = soup.find_all('div', class_='user-card')
+            data = await self.parse_web_data()
             
-            total = len(user_cards)
-            success = 0
-            failed_users = []
-            
-            for card in user_cards:
-                username = card.find('h3').text.split(' ')[0]
-                is_success = "✅" in card.find('h3').text
-                
-                if is_success:
-                    success += 1
-                else:
-                    duration = card.find('p').text.split(': ')[1]
-                    message = card.find('details').find('pre').get_text('\n').strip()
-                    failed_users.append({
-                        "username": username,
-                        "duration": duration,
-                        "message": message
-                    })
-
-            # 构建消息内容
             summary = (
-                "📊 签到统计报告\n"
-                f"👥 总人数: {total}\n"
-                f"✅ 成功: {success}\n"
-                f"❌ 失败: {total - success}\n"
+                "📝 宿舍签到汇总报告\n"
+                f"👥 总人数: {data['total']}\n"
+                f"✅ 成功: {data['success']}\n"
+                f"❌ 失败: {data['total'] - data['success']}\n"
+                f"📅 报告生成时间: {data['report_time']}\n"
             )
             
-            if failed_users:
+            if data['failed_users']:
                 details = "\n⚠️ 失败详情：\n"
-                for user in failed_users:
+                for user in data['failed_users']:
                     details += (
                         f"\n▫️ 用户：{user['username']}\n"
                         f"⏱ 耗时：{user['duration']}\n"
@@ -75,8 +91,6 @@ class WebDataScraperPlugin(Star):
                 chain=[{"type": "plain", "text": full_msg}]
             )
             
-        except requests.RequestException as e:
-            print(f"网络请求异常：{str(e)}")
         except Exception as e:
             print(f"定时任务异常：{str(e)}")
 
@@ -84,20 +98,14 @@ class WebDataScraperPlugin(Star):
     async def ahut_sign(self, event: AstrMessageEvent):
         """手动查询签到情况"""
         try:
-            url = "http://sign.domye.top/"
-            response = requests.get(url)
-            response.encoding = 'utf-8'
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            user_cards = soup.find_all('div', class_='user-card')
-            total = len(user_cards)
-            success = sum(1 for card in user_cards if "✅" in card.find('h3').text)
+            data = await self.parse_web_data()
             
             report = (
-                "📋 签到统计报告\n"
-                f"👥 总人数: {total}\n"
-                f"✅ 成功: {success}\n"
-                f"❌ 失败: {total - success}"
+                "📋 最新签到统计\n"
+                f"👥 总人数: {data['total']}\n"
+                f"✅ 成功: {data['success']}\n"
+                f"❌ 失败: {data['total'] - data['success']}\n"
+                f"📅 报告时间: {data['report_time']}"
             )
             
             yield event.plain_result(report)
